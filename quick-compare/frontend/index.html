@@ -614,7 +614,7 @@ function SearchBar({ onSearch, loading }) {
           onKeyDown={handleKeyDown}
           onFocus={() => query.length >= 2 && setShowSuggestions(true)}
           onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-          placeholder="Search for a product… e.g. amul butter 500g"
+          placeholder="e.g. amul butter 500g  or  I want to buy 1 dozen bananas"
           className="flex-1 bg-transparent outline-none text-white placeholder-white/20 text-base"
           autoComplete="off"
         />
@@ -737,7 +737,7 @@ function App() {
     setError(null);
     setLastQuery(query);
     try {
-      const res = await fetch(`${API}/compare?q=${encodeURIComponent(query)}&platforms=blinkit,zepto`);
+      const res = await fetch(`${API}/smart-search?q=${encodeURIComponent(query)}&platforms=blinkit,zepto`);
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data = await res.json();
       setResults(data);
