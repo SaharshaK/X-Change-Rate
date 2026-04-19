@@ -137,6 +137,7 @@ function CartDrawer({ cart, onRemove, onClear, onClose, isOpen }) {
     const lines = cart.filter(e => e[platform] && e[platform].in_stock);
     if (lines.length === 0) return;
     setSyncingPlatform(platform);
+    const added = [];
     try {
       for (const entry of lines) {
         const p = entry[platform];
@@ -158,8 +159,12 @@ function CartDrawer({ cart, onRemove, onClear, onClose, isOpen }) {
             if (typeof d === 'string') msg = d;
             else if (Array.isArray(d) && d[0]?.msg) msg = d.map(x => x.msg).join('; ');
           } catch (_) {}
-          throw new Error(msg);
+          const prefix = added.length > 0
+            ? `Added ${added.length} item${added.length === 1 ? '' : 's'} before stopping. `
+            : '';
+          throw new Error(prefix + msg);
         }
+        added.push(entry.query);
       }
       window.open(CHECKOUT_URLS[platform], '_blank', 'noopener,noreferrer');
       onClose();

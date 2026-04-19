@@ -6,8 +6,28 @@ ADD_TO_CART_JS = """
 async (args) => {
     const productName = (args && args.productName) || '';
     const wantPrice = args && args.price != null && !isNaN(Number(args.price)) ? Number(args.price) : null;
-    const norm = (s) => (s || '').trim().toLowerCase().replace(/\\s+/g, ' ');
+    const norm = (s) => (s || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\\s+/g, ' ')
+        .trim();
     const wantName = norm(productName);
+    const wantTokens = wantName.split(' ').filter(Boolean);
+    const overlapScore = (candidate) => {
+        const tokens = new Set(norm(candidate).split(' ').filter(Boolean));
+        if (wantTokens.length === 0 || tokens.size === 0) return 0;
+        let matches = 0;
+        wantTokens.forEach(token => {
+            if (tokens.has(token)) matches += 1;
+        });
+        return matches / wantTokens.length;
+    };
+    const buttonText = (btn) => (btn?.textContent || '').trim().toUpperCase().replace(/\\s+/g, ' ');
+    const isAddButton = (btn) => {
+        const t = buttonText(btn);
+        return t === 'ADD' || t === '+' || t === 'ADD TO CART' || t.startsWith('ADD ');
+    };
 
     const nameEls = document.querySelectorAll("div[class*='tw-line-clamp-2']");
     const candidates = [];
@@ -16,6 +36,9 @@ async (args) => {
         if (!text) return;
         const card = nameEl.closest("div[class*='tw-px-3']") || nameEl.parentElement?.parentElement?.parentElement?.parentElement;
         if (!card) return;
+        const buttons = Array.from(card.querySelectorAll('button')).filter(btn => !btn.disabled);
+        const addBtn = buttons.find(isAddButton);
+        const disabled = buttons.length === 0 || !addBtn;
         let price = null;
         Array.from(card.querySelectorAll('*')).forEach(el => {
             const t = (el.textContent || '').trim();
@@ -24,37 +47,56 @@ async (args) => {
             }
         });
         if (price == null) return;
-        candidates.push({ card, name: text, price, n: norm(text) });
+        candidates.push({
+            card,
+            name: text,
+            price,
+            n: norm(text),
+            overlap: overlapScore(text),
+            addBtn,
+            disabled,
+        });
     });
 
-    let picks = candidates.filter(c => c.n === wantName);
-    if (picks.length > 1 && wantPrice != null) {
-        const byP = picks.filter(c => Math.abs(c.price - wantPrice) < 0.51);
-        if (byP.length >= 1) picks = byP;
+    if (candidates.length === 0) {
+        return { success: false, error: 'No Blinkit product cards were detected on the search page' };
     }
-    if (picks.length === 0) {
-        picks = candidates.filter(c => c.n.includes(wantName) || wantName.includes(c.n));
+
+    const ranked = candidates
+        .map(c => {
+            const exact = c.n === wantName ? 1 : 0;
+            const contains = c.n.includes(wantName) || wantName.includes(c.n) ? 1 : 0;
+            const priceScore = wantPrice != null ? Math.max(0, 1 - Math.min(Math.abs(c.price - wantPrice), 25) / 25) : 0;
+            return {
+                ...c,
+                score: exact * 100 + contains * 20 + c.overlap * 50 + priceScore * 10 - (c.disabled ? 1000 : 0),
+            };
+        })
+        .sort((a, b) => b.score - a.score);
+
+    const chosen = ranked[0];
+    if (!chosen || chosen.score < 10) {
+        return { success: false, error: 'Could not confidently match the requested Blinkit product' };
     }
-    if (picks.length > 1 && wantPrice != null) {
-        const byP = picks.filter(c => Math.abs(c.price - wantPrice) < 0.51);
-        if (byP.length >= 1) picks = byP;
+    if (!chosen.addBtn) {
+        return { success: false, error: 'Matched product does not have a clickable ADD button' };
     }
-    if (picks.length > 1) {
-        picks.sort((a, b) => Math.abs(a.n.length - wantName.length) - Math.abs(b.n.length - wantName.length));
-        picks = [picks[0]];
-    }
-    if (picks.length === 0) {
-        return { success: false, error: 'Product not found or ADD button not visible' };
-    }
-    const chosen = picks[0];
-    const addBtn = Array.from(chosen.card.querySelectorAll('button')).find(b => {
-        const t = (b.textContent || '').trim().toUpperCase();
-        return t === 'ADD' || t === '+';
+
+    chosen.card.scrollIntoView({ block: 'center', behavior: 'instant' });
+    chosen.addBtn.click();
+    await new Promise(r => setTimeout(r, 1200));
+
+    const clickedText = buttonText(chosen.addBtn);
+    const quantityButton = Array.from(chosen.card.querySelectorAll('button')).find(b => {
+        const t = buttonText(b);
+        return t === '+' || t === '-' || /^\\d+$/.test(t);
     });
-    if (!addBtn) return { success: false, error: 'ADD button not found' };
-    addBtn.click();
-    await new Promise(r => setTimeout(r, 800));
-    return { success: true, name: chosen.name };
+
+    if (quantityButton || (clickedText && clickedText !== 'ADD' && clickedText !== 'ADD TO CART')) {
+        return { success: true, name: chosen.name };
+    }
+
+    return { success: false, error: 'Blinkit did not confirm the add-to-cart action after clicking ADD' };
 }
 """
 
@@ -156,6 +198,12 @@ class BlinkitScraper(BaseScraper):
 
             if "/login" in page.url or "/signin" in page.url:
                 raise RuntimeError("Not logged in to Blinkit. Open Chrome, log in, then restart the server.")
+
+            body = await page.inner_text("body")
+            if "enter your location" in body.lower() or "select location" in body.lower():
+                raise RuntimeError(
+                    "Blinkit needs a delivery location before add-to-cart can work. Set the address in Chrome and retry."
+                )
 
             await page.wait_for_selector("div[class*='tw-line-clamp-2']", timeout=15000)
 
