@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from scrapers import BlinkitScraper, ZeptoScraper, InstamartScraper
 from scrapers.base import Product
 from db import init_db, get_cached, set_cached, clear_cache, suggest_names
+from api.nlp import parse_query
 
 
 # ---------- models ----------
@@ -161,32 +162,32 @@ async def list_platforms():
     return {"platforms": list(SCRAPER_MAP.keys())}
 
 
+async def _run_compare(q: str, platforms: str, headless: bool) -> CompareResponse:
+    requested = [p.strip().lower() for p in platforms.split(",")]
+    invalid = [p for p in requested if p not in SCRAPER_MAP]
+    if invalid:
+        raise HTTPException(400, f"Unknown platforms: {invalid}. Valid: {list(SCRAPER_MAP.keys())}")
+
+    tasks = [fetch_platform(q, platform, headless) for platform in requested]
+    platform_results = await asyncio.gather(*tasks)
+
+    results = {r.platform: r for r in platform_results}
+    return CompareResponse(
+        query=q,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        results=results,
+        cheapest=find_cheapest(results),
+        summary=build_summary(results),
+    )
+
+
 @app.get("/compare", response_model=CompareResponse)
 async def compare(
     q: str = Query(..., description="Product to search, e.g. 'amul butter 500g'"),
     platforms: str = Query("blinkit,zepto,instamart", description="Comma-separated platforms"),
     headless: bool = Query(True, description="Run browser headless"),
 ):
-    requested = [p.strip().lower() for p in platforms.split(",")]
-    invalid = [p for p in requested if p not in SCRAPER_MAP]
-    if invalid:
-        raise HTTPException(400, f"Unknown platforms: {invalid}. Valid: {list(SCRAPER_MAP.keys())}")
-
-    # Fetch all platforms concurrently
-    tasks = [fetch_platform(q, platform, headless) for platform in requested]
-    platform_results = await asyncio.gather(*tasks)
-
-    results = {r.platform: r for r in platform_results}
-    cheapest = find_cheapest(results)
-    summary = build_summary(results)
-
-    return CompareResponse(
-        query=q,
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        results=results,
-        cheapest=cheapest,
-        summary=summary,
-    )
+    return await _run_compare(q, platforms, headless)
 
 
 @app.get("/cheapest", response_model=Optional[ProductOut])
@@ -195,7 +196,7 @@ async def cheapest_only(
     platforms: str = Query("blinkit,zepto,instamart"),
     headless: bool = Query(True),
 ):
-    resp = await compare(q=q, platforms=platforms, headless=headless)
+    resp = await _run_compare(q, platforms, headless)
     return resp.cheapest
 
 
@@ -257,6 +258,30 @@ async def add_to_cart_endpoint(
         raise HTTPException(502, detail=err or "Add to cart failed")
 
     return {"ok": True, "platform": platform}
+
+
+class SmartSearchRequest(BaseModel):
+    query: str
+
+
+@app.post("/smart-search", response_model=CompareResponse)
+async def smart_search_post(
+    body: SmartSearchRequest,
+    platforms: str = Query("blinkit,zepto,instamart"),
+    headless: bool = Query(True),
+):
+    search_term = await parse_query(body.query)
+    return await _run_compare(search_term, platforms, headless)
+
+
+@app.get("/smart-search", response_model=CompareResponse)
+async def smart_search_get(
+    q: str = Query(..., description="Natural language, e.g. 'I want to buy 1 dozen banana'"),
+    platforms: str = Query("blinkit,zepto,instamart"),
+    headless: bool = Query(True),
+):
+    search_term = await parse_query(q)
+    return await _run_compare(search_term, platforms, headless)
 
 
 # ---------- serve frontend ----------
