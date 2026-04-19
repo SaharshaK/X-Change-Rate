@@ -737,11 +737,7 @@ function App() {
     setError(null);
     setLastQuery(query);
     try {
-<<<<<<< HEAD
-      const res = await fetch(`${API}/compare?q=${encodeURIComponent(query)}&platforms=blinkit,zepto`);
-=======
-      const res = await fetch(`${API}/smart-search?q=${encodeURIComponent(query)}&platforms=blinkit,zepto,instamart`);
->>>>>>> 6378fcb (nlp)
+      const res = await fetch(`${API}/smart-search?q=${encodeURIComponent(query)}&platforms=blinkit,zepto`);
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data = await res.json();
       setResults(data);
