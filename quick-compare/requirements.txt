@@ -7,3 +7,5 @@ python-dotenv==1.0.1
 pycryptodome==3.20.0
 groq>=0.11.0
 aiofiles==24.1.0
+httpx==0.27.2
+python-telegram-bot==21.6
