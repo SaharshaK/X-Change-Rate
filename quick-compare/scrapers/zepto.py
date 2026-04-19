@@ -1,5 +1,6 @@
 from typing import Optional
 from urllib.parse import quote
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from .base import BaseScraper, Product
 
 ADD_TO_CART_JS = """
@@ -154,12 +155,16 @@ class ZeptoScraper(BaseScraper):
             url = f"{self.BASE_URL}/search?query={quote(query)}"
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(3500)
-            body = await page.inner_text("body")
-            if "select location" in body.lower() or "choose location" in body.lower():
-                raise RuntimeError(
-                    "Zepto needs a delivery location before search can work. Open Chrome, set the address on Zepto, then retry."
-                )
-            await page.wait_for_selector("div[data-is-out-of-stock]", timeout=15000)
+            await self.ensure_default_location(page)
+            try:
+                await page.wait_for_selector("div[data-is-out-of-stock]", timeout=15000)
+            except PlaywrightTimeoutError:
+                body = await page.inner_text("body")
+                if "select location" in body.lower() or "choose location" in body.lower():
+                    raise RuntimeError(
+                        "Zepto needs a delivery location before search can work. Open Chrome, set the address on Zepto, then retry."
+                    )
+                raise
 
             products = await page.evaluate(JS)
 
@@ -188,12 +193,16 @@ class ZeptoScraper(BaseScraper):
             url = f"{self.BASE_URL}/search?query={quote(query)}"
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(3000)
-            body = await page.inner_text("body")
-            if "select location" in body.lower() or "choose location" in body.lower():
-                raise RuntimeError(
-                    "Zepto needs a delivery location before add-to-cart can work. Set the address in Chrome and retry."
-                )
-            await page.wait_for_selector("div[data-is-out-of-stock]", timeout=15000)
+            await self.ensure_default_location(page)
+            try:
+                await page.wait_for_selector("div[data-is-out-of-stock]", timeout=15000)
+            except PlaywrightTimeoutError:
+                body = await page.inner_text("body")
+                if "select location" in body.lower() or "choose location" in body.lower():
+                    raise RuntimeError(
+                        "Zepto needs a delivery location before add-to-cart can work. Set the address in Chrome and retry."
+                    )
+                raise
 
             result = await page.evaluate(
                 ADD_TO_CART_JS, {"productName": product_name, "price": price}

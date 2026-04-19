@@ -1,5 +1,6 @@
 from typing import Optional
 from urllib.parse import quote
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from .base import BaseScraper, Product
 
 ADD_TO_CART_JS = """
@@ -152,6 +153,7 @@ class BlinkitScraper(BaseScraper):
             url = f"{self.BASE_URL}/s/?q={quote(query)}"
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(3500)
+            await self.ensure_default_location(page)
 
             # Detect login wall — Blinkit redirects to /login when session expires
             if "/login" in page.url or "/signin" in page.url:
@@ -159,14 +161,15 @@ class BlinkitScraper(BaseScraper):
                     "Not logged in to Blinkit. Open Chrome, log in at blinkit.com, then restart the server."
                 )
 
-            # Detect location prompt (user not set a delivery address)
-            body = await page.inner_text("body")
-            if "enter your location" in body.lower() or "select location" in body.lower():
-                raise RuntimeError(
-                    "Blinkit needs a delivery location. Open Chrome, set your address on blinkit.com, then retry."
-                )
-
-            await page.wait_for_selector("div[class*='tw-line-clamp-2']", timeout=15000)
+            try:
+                await page.wait_for_selector("div[class*='tw-line-clamp-2']", timeout=15000)
+            except PlaywrightTimeoutError:
+                body = await page.inner_text("body")
+                if "enter your location" in body.lower() or "select location" in body.lower():
+                    raise RuntimeError(
+                        "Blinkit needs a delivery location. Open Chrome, set your address on blinkit.com, then retry."
+                    )
+                raise
 
             products = await page.evaluate(JS)
 
@@ -195,17 +198,20 @@ class BlinkitScraper(BaseScraper):
             url = f"{self.BASE_URL}/s/?q={quote(query)}"
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(3000)
+            await self.ensure_default_location(page)
 
             if "/login" in page.url or "/signin" in page.url:
                 raise RuntimeError("Not logged in to Blinkit. Open Chrome, log in, then restart the server.")
 
-            body = await page.inner_text("body")
-            if "enter your location" in body.lower() or "select location" in body.lower():
-                raise RuntimeError(
-                    "Blinkit needs a delivery location before add-to-cart can work. Set the address in Chrome and retry."
-                )
-
-            await page.wait_for_selector("div[class*='tw-line-clamp-2']", timeout=15000)
+            try:
+                await page.wait_for_selector("div[class*='tw-line-clamp-2']", timeout=15000)
+            except PlaywrightTimeoutError:
+                body = await page.inner_text("body")
+                if "enter your location" in body.lower() or "select location" in body.lower():
+                    raise RuntimeError(
+                        "Blinkit needs a delivery location before add-to-cart can work. Set the address in Chrome and retry."
+                    )
+                raise
 
             result = await page.evaluate(
                 ADD_TO_CART_JS, {"productName": product_name, "price": price}

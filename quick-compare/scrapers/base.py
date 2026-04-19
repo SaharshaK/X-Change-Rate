@@ -11,6 +11,9 @@ CHROME_USER_DATA = os.getenv(
     os.path.expanduser("~/Library/Application Support/Google/Chrome"),
 )
 CHROME_PROFILE = os.getenv("CHROME_PROFILE", "Default")
+DEFAULT_LATITUDE = float(os.getenv("DEFAULT_LATITUDE", "12.9716"))
+DEFAULT_LONGITUDE = float(os.getenv("DEFAULT_LONGITUDE", "77.5946"))
+DEFAULT_ADDRESS_LABEL = os.getenv("DEFAULT_ADDRESS_LABEL", "").strip()
 
 LAUNCH_ARGS = [
     f"--profile-directory={CHROME_PROFILE}",
@@ -71,6 +74,8 @@ class BaseScraper(ABC):
                 headless=self.headless,
                 args=LAUNCH_ARGS,
                 ignore_default_args=["--enable-automation"],
+                geolocation={"latitude": DEFAULT_LATITUDE, "longitude": DEFAULT_LONGITUDE},
+                permissions=["geolocation"],
             )
             return self
         except Exception:
@@ -88,7 +93,9 @@ class BaseScraper(ABC):
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
-            )
+            ),
+            geolocation={"latitude": DEFAULT_LATITUDE, "longitude": DEFAULT_LONGITUDE},
+            permissions=["geolocation"],
         )
 
         if self.cookie_domains:
@@ -109,9 +116,124 @@ class BaseScraper(ABC):
     async def new_page(self) -> Page:
         page = await self._context.new_page()
         await page.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+            f"""
+            Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined }});
+            const defaultPosition = {{
+              coords: {{
+                latitude: {DEFAULT_LATITUDE},
+                longitude: {DEFAULT_LONGITUDE},
+                accuracy: 25,
+              }},
+              timestamp: Date.now(),
+            }};
+            navigator.geolocation.getCurrentPosition = (success) => success(defaultPosition);
+            navigator.geolocation.watchPosition = (success) => {{
+              success(defaultPosition);
+              return 1;
+            }};
+            navigator.geolocation.clearWatch = () => {{}};
+            """
         )
         return page
+
+    async def ensure_default_location(self, page: Page) -> None:
+        await page.wait_for_timeout(1200)
+
+        for _ in range(3):
+            try:
+                body = (await page.inner_text("body")).lower()
+            except Exception:
+                return
+
+            if not any(
+                phrase in body
+                for phrase in (
+                    "select location",
+                    "choose location",
+                    "enter your location",
+                    "delivery location",
+                    "use current location",
+                )
+            ):
+                return
+
+            try:
+                await page.evaluate(
+                    """(addressLabel) => {
+                        const normalize = (s) => (s || '').trim().toLowerCase().replace(/\\s+/g, ' ');
+                        const clickByText = (texts) => {
+                            const targets = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+                            for (const el of targets) {
+                                const text = normalize(el.textContent);
+                                if (!text) continue;
+                                if (texts.some(t => text.includes(t))) {
+                                    el.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        };
+
+                        clickByText([
+                            'use current location',
+                            'current location',
+                            'allow location',
+                            'detect my location',
+                            'share location',
+                            'use my location',
+                            'confirm location',
+                            'set location',
+                        ]);
+
+                        if (!addressLabel) return;
+
+                        const input = Array.from(document.querySelectorAll('input')).find((el) => {
+                            const hint = normalize((el.getAttribute('placeholder') || '') + ' ' + (el.getAttribute('aria-label') || ''));
+                            return (
+                                hint.includes('search') ||
+                                hint.includes('location') ||
+                                hint.includes('address') ||
+                                hint.includes('area') ||
+                                hint.includes('pincode')
+                            );
+                        });
+
+                        if (!input) return;
+                        input.focus();
+                        input.value = addressLabel;
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        input.dispatchEvent(new Event('change', { bubbles: true }));
+                    }""",
+                    DEFAULT_ADDRESS_LABEL,
+                )
+            except Exception:
+                return
+
+            await page.wait_for_timeout(1800)
+
+            if DEFAULT_ADDRESS_LABEL:
+                try:
+                    await page.evaluate(
+                        """(addressLabel) => {
+                            const normalize = (s) => (s || '').trim().toLowerCase().replace(/\\s+/g, ' ');
+                            const target = normalize(addressLabel);
+                            const options = Array.from(document.querySelectorAll('button, li, [role="option"], a, div'));
+                            for (const el of options) {
+                                const text = normalize(el.textContent);
+                                if (!text || text.length < 3) continue;
+                                if (text.includes(target) || target.includes(text)) {
+                                    el.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }""",
+                        DEFAULT_ADDRESS_LABEL,
+                    )
+                except Exception:
+                    return
+
+                await page.wait_for_timeout(1500)
 
     @abstractmethod
     async def search(self, query: str) -> List[Product]:
