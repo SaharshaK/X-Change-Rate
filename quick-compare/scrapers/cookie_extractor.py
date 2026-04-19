@@ -6,6 +6,7 @@ Uses the macOS Keychain for the AES-128-CBC decryption key.
 import hashlib
 import os
 import shutil
+import sys
 import sqlite3
 import subprocess
 import tempfile
@@ -54,6 +55,8 @@ def _decrypt(encrypted_value: bytes, key: bytes) -> str:
 
 def extract_cookies(domains: List[str]) -> List[dict]:
     """Return Playwright-compatible cookie dicts for the given domains."""
+    if sys.platform != "darwin" or not os.path.isfile(CHROME_COOKIE_DB):
+        return []
     tmp = tempfile.mktemp(suffix=".db")
     shutil.copy2(CHROME_COOKIE_DB, tmp)
 
