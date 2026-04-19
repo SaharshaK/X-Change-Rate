@@ -64,10 +64,19 @@ async def chat(
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
 
-    data = json.loads(raw)
+    # Try to extract JSON even if LLM added extra text around it
+    json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+    if not json_match:
+        # LLM returned plain text — treat as a chat reply
+        return {"intent": "chat", "reply": raw}
+
+    try:
+        data = json.loads(json_match.group())
+    except json.JSONDecodeError:
+        return {"intent": "chat", "reply": raw}
 
     if data.get("intent") == "search":
-        product = data["product"].strip()
+        product = (data.get("product") or "").strip()
         quantity = (data.get("quantity") or "").strip()
         data["search_query"] = f"{product} {quantity}".strip() if quantity else product
 

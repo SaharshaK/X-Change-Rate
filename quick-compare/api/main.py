@@ -3,7 +3,7 @@ import asyncio
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -257,6 +257,18 @@ async def add_to_cart_endpoint(
         raise HTTPException(502, detail=err or "Add to cart failed")
 
     return {"ok": True, "platform": platform}
+
+
+class NLPChatRequest(BaseModel):
+    message: str
+    history: List[Dict[str, Any]] = []
+
+
+@app.post("/nlp/chat")
+async def nlp_chat(body: NLPChatRequest):
+    from api.nlp import chat
+    result = await chat(body.message, body.history or None)
+    return result
 
 
 class SmartSearchRequest(BaseModel):
