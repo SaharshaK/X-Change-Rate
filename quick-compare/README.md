@@ -39,6 +39,30 @@ python run.py
 > The scraper reuses your existing Chrome login sessions (Blinkit, Zepto, Swiggy).  
 > Once the server is running, you can reopen Chrome.
 
+### Run the Telegram bot
+
+The repo now includes a polling-based Telegram bot that talks to this API and reuses the NLP parsing already wired into the backend branch.
+
+```bash
+# 1. Copy env vars
+cp .env.example .env
+
+# 2. Fill these in
+#    GROQ_API_KEY=...
+#    TELEGRAM_BOT_TOKEN=...
+
+# 3. Start the API
+python run.py
+
+# 4. In another terminal, start the bot
+python run_telegram_bot.py
+```
+
+Suggested local setup:
+- Keep `QUICK_COMPARE_API_BASE_URL=http://127.0.0.1:8000`
+- Talk to the bot in Telegram with messages like `1 dozen bananas` or `what about zepto?`
+- Use `ngrok http 8000` only if another service needs to reach your local API
+
 ---
 
 ## API Reference
@@ -136,6 +160,18 @@ GET /search/instamart?q=milk
 
 ---
 
+### `GET /smart-search`
+
+Natural-language search powered by the NLP layer.
+
+```
+GET /smart-search?q=I want 1 dozen bananas
+```
+
+**Response** — same shape as `/compare`, after the natural-language query is converted into a search term.
+
+---
+
 ### `GET /platforms`
 
 List all supported platforms.
@@ -219,7 +255,8 @@ ngrok http 8000
 ```
 quick-compare/
 ├── api/
-│   └── main.py          # FastAPI app — all endpoints live here
+│   ├── main.py          # FastAPI app — all endpoints live here
+│   └── nlp.py           # NLP parsing for natural-language shopping queries
 ├── scrapers/
 │   ├── base.py          # Base scraper + Chrome cookie reuse logic
 │   ├── cookie_extractor.py  # Decrypts Chrome's AES-128-CBC cookies on macOS
@@ -228,7 +265,13 @@ quick-compare/
 │   └── instamart.py
 ├── db/
 │   └── database.py      # SQLite cache (aiosqlite)
+├── telegram_bot/
+│   ├── main.py          # Telegram handlers and conversation memory
+│   ├── client.py        # HTTP client for calling the FastAPI API
+│   ├── formatting.py    # Telegram-friendly result formatting
+│   └── config.py        # Env-based bot configuration
 ├── run.py               # Entry point
+├── run_telegram_bot.py  # Telegram polling entry point
 └── requirements.txt
 ```
 
@@ -240,5 +283,23 @@ quick-compare/
 |---|---|---|
 | `CHROME_USER_DATA` | `~/Library/Application Support/Google/Chrome` | Chrome profile dir |
 | `CHROME_PROFILE` | `Default` | Chrome profile name |
+| `GROQ_API_KEY` | — | Required for natural-language parsing |
+| `TELEGRAM_BOT_TOKEN` | — | Required to run the Telegram bot |
+| `QUICK_COMPARE_API_BASE_URL` | `http://127.0.0.1:8000` | Backend API URL used by the bot |
+| `TELEGRAM_DEFAULT_PLATFORMS` | `blinkit,zepto,instamart` | Platforms queried by default |
+| `TELEGRAM_MAX_PRODUCTS_PER_PLATFORM` | `1` | Number of products shown per platform in replies |
 
 Set via a `.env` file or export before running.
+
+---
+
+## Telegram Bot Commands
+
+The bot supports both free-text messages and explicit commands:
+
+- Send plain English like `I want amul butter 500g`
+- Follow up with `what about zepto?` after a previous search
+- `/compare amul butter 500g`
+- `/cheapest tata salt`
+- `/platform blinkit milk`
+- `/suggest amu`
