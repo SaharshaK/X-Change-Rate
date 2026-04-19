@@ -123,3 +123,19 @@ class BaseScraper(ABC):
             return products, None
         except Exception as e:
             return [], str(e)
+
+    async def add_to_cart(
+        self, query: str, product_name: str, price: Optional[float] = None
+    ) -> bool:
+        raise NotImplementedError(f"{self.platform} does not support add-to-cart")
+
+    async def safe_add_to_cart(
+        self, query: str, product_name: str, price: Optional[float] = None
+    ) -> Tuple[bool, Optional[str]]:
+        try:
+            success = await self.add_to_cart(query, product_name, price)
+            return success, None
+        except NotImplementedError as e:
+            return False, str(e)
+        except Exception as e:
+            return False, str(e)

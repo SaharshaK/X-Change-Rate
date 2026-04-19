@@ -222,6 +222,43 @@ async def bust_cache():
     return {"message": "Cache cleared"}
 
 
+class AddToCartBody(BaseModel):
+    platform: str
+    query: str
+    product_name: str
+    price: Optional[float] = None
+
+
+@app.post("/add-to-cart")
+async def add_to_cart_endpoint(
+    body: AddToCartBody,
+    headless: bool = Query(True, description="Run browser headless"),
+):
+    """
+    Add a single product to the real app cart (Playwright + session cookies).
+    Call once per line item; then open the platform cart in the browser.
+    """
+    platform = body.platform.strip().lower()
+    if platform not in SCRAPER_MAP:
+        raise HTTPException(
+            400,
+            f"Unknown platform '{body.platform}'. Valid: {list(SCRAPER_MAP.keys())}",
+        )
+
+    scraper_cls = SCRAPER_MAP[platform]
+    async with scraper_cls(headless=headless) as scraper:
+        ok, err = await scraper.safe_add_to_cart(
+            body.query.strip(),
+            body.product_name.strip(),
+            body.price,
+        )
+
+    if not ok:
+        raise HTTPException(502, detail=err or "Add to cart failed")
+
+    return {"ok": True, "platform": platform}
+
+
 # ---------- serve frontend ----------
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
