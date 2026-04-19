@@ -100,13 +100,6 @@ const PLATFORMS = {
 
 const ACTIVE_PLATFORMS = ['blinkit', 'zepto'];
 
-// These sites do not serve a working /cart route in the browser (404 or app-only).
-// Opening the homepage with ?cart=open shows the cart drawer on Zepto; Blinkit uses the same pattern on web.
-const CHECKOUT_URLS = {
-  blinkit: 'https://blinkit.com/?cart=open',
-  zepto: 'https://www.zeptonow.com/?cart=open',
-};
-
 /* ── Skeleton ── */
 function Skeleton({ className = '' }) {
   return <div className={`shimmer rounded-lg ${className}`} />;
@@ -114,8 +107,6 @@ function Skeleton({ className = '' }) {
 
 /* ── Cart Drawer ── */
 function CartDrawer({ cart, onRemove, onClear, onClose, isOpen }) {
-  const [syncingPlatform, setSyncingPlatform] = useState(null);
-
   const totals = {};
   ACTIVE_PLATFORMS.forEach(p => {
     totals[p] = cart.reduce((sum, e) => {
@@ -132,48 +123,6 @@ function CartDrawer({ cart, onRemove, onClear, onClose, isOpen }) {
   const savings = availablePlatforms.length === 2
     ? Math.abs(totals.blinkit - totals.zepto)
     : 0;
-
-  const syncCartToPlatformAndOpen = async (platform) => {
-    const lines = cart.filter(e => e[platform] && e[platform].in_stock);
-    if (lines.length === 0) return;
-    setSyncingPlatform(platform);
-    const added = [];
-    try {
-      for (const entry of lines) {
-        const p = entry[platform];
-        const res = await fetch(`${API}/add-to-cart`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            platform,
-            query: entry.query,
-            product_name: p.name,
-            price: p.price,
-          }),
-        });
-        if (!res.ok) {
-          let msg = `Could not add "${entry.query}"`;
-          try {
-            const err = await res.json();
-            const d = err.detail;
-            if (typeof d === 'string') msg = d;
-            else if (Array.isArray(d) && d[0]?.msg) msg = d.map(x => x.msg).join('; ');
-          } catch (_) {}
-          const prefix = added.length > 0
-            ? `Added ${added.length} item${added.length === 1 ? '' : 's'} before stopping. `
-            : '';
-          throw new Error(prefix + msg);
-        }
-        added.push(entry.query);
-      }
-      window.open(CHECKOUT_URLS[platform], '_blank', 'noopener,noreferrer');
-      onClose();
-    } catch (e) {
-      alert(e.message || String(e));
-    } finally {
-      setSyncingPlatform(null);
-    }
-  };
 
   return (
     <>
@@ -289,7 +238,7 @@ function CartDrawer({ cart, onRemove, onClear, onClose, isOpen }) {
               ))}
             </div>
 
-            {/* Totals + Checkout */}
+            {/* Totals */}
             <div className="px-4 py-4 border-t border-white/8 space-y-3 flex-shrink-0">
               <div className="grid grid-cols-2 gap-2">
                 {ACTIVE_PLATFORMS.map(p => {
@@ -314,26 +263,28 @@ function CartDrawer({ cart, onRemove, onClear, onClose, isOpen }) {
                 })}
               </div>
 
-              {ACTIVE_PLATFORMS.filter(p => totals[p] > 0).map(p => {
-                const meta = PLATFORMS[p];
-                const busy = syncingPlatform === p;
-                return (
-                  <button
-                    key={p}
-                    type="button"
-                    onClick={() => syncCartToPlatformAndOpen(p)}
-                    disabled={syncingPlatform !== null}
-                    className="w-full py-3 rounded-xl font-bold text-sm text-black transition-all hover:opacity-90 active:scale-95 disabled:opacity-50"
-                    style={{ background: meta.color }}
-                  >
-                    {busy ? 'Adding to cart…' : `Checkout on ${meta.label} →`}
-                  </button>
-                );
-              })}
-
-              <p className="text-[10px] text-white/20 text-center leading-relaxed">
-                Adds the same SKUs shown above into that app’s cart (server), then opens its cart page so you don’t add twice.
-              </p>
+              {cheapestPlatform ? (
+                <div
+                  className="rounded-xl px-4 py-3 text-center"
+                  style={{ background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.18)' }}
+                >
+                  <div className="text-[10px] uppercase tracking-widest text-emerald-400/70 mb-1">
+                    Lowest basket total
+                  </div>
+                  <div className="text-sm font-semibold text-white">
+                    {PLATFORMS[cheapestPlatform].label} at ₹{totals[cheapestPlatform].toFixed(0)}
+                  </div>
+                  {savings > 0 && (
+                    <div className="text-[11px] text-emerald-400/80 mt-1">
+                      You save ₹{savings.toFixed(0)} compared with the other app
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p className="text-[10px] text-white/20 text-center leading-relaxed">
+                  Add items to your basket to compare the total cost across apps.
+                </p>
+              )}
             </div>
           </>
         )}
@@ -547,7 +498,7 @@ function SummaryBar({ results, cheapest, summary, onAddAll, currentQueryInCart }
                 : 'bg-violet-600 hover:bg-violet-500 text-white'
             }`}
           >
-            {currentQueryInCart ? '✓ In Basket' : '+ Add to Basket'}
+            {currentQueryInCart ? '✓ In Basket' : '+ Add to Compare Basket'}
           </button>
         )}
       </div>
