@@ -26,6 +26,11 @@ API_BASE  = os.getenv("API_BASE", "http://localhost:8000")
 _histories: Dict[int, List[Dict]] = defaultdict(list)
 
 PLATFORM_EMOJI = {"blinkit": "🟡", "zepto": "🟣"}
+TOP_N = 3  # products shown per platform
+
+# Temporary store for pending cart adds awaiting qty confirmation
+# key: user_id, value: {platform, query, product_name}
+_pending_cart: Dict[int, dict] = {}
 
 
 def _format_results(data: dict) -> str:
@@ -38,49 +43,48 @@ def _format_results(data: dict) -> str:
     for platform, result in results.items():
         emoji = PLATFORM_EMOJI.get(platform, "🛒")
         label = platform.capitalize()
+        lines.append(f"{emoji} *{label}*")
 
         if result["status"] == "error":
-            lines.append(f"{emoji} *{label}*: unavailable")
+            lines.append("  ⚠️ unavailable\n")
             continue
 
-        products = result["products"]
-        if not products:
-            lines.append(f"{emoji} *{label}*: no results")
+        in_stock = [p for p in result["products"] if p["in_stock"]]
+        if not in_stock:
+            lines.append("  No results\n")
             continue
 
-        best = min((p for p in products if p["in_stock"]), key=lambda p: p["price"], default=None)
-        if best:
-            tag = " ✅ CHEAPEST" if cheapest and best["name"] == cheapest["name"] and best["platform"] == cheapest["platform"] else ""
-            lines.append(f"{emoji} *{label}*: ₹{best['price']} — {best['name']}{tag}")
-        else:
-            lines.append(f"{emoji} *{label}*: out of stock")
+        top = sorted(in_stock, key=lambda p: p["price"])[:TOP_N]
+        for p in top:
+            tag = " ✅" if cheapest and p["name"] == cheapest["name"] and p["platform"] == cheapest["platform"] else ""
+            lines.append(f"  • {p['name']} — *₹{p['price']}* ({p['quantity']}){tag}")
+        lines.append("")
 
     if cheapest:
-        lines.append(f"\n💚 Best deal: *{cheapest['name']}* at ₹{cheapest['price']} on {cheapest['platform'].capitalize()}")
+        lines.append(f"💚 Best deal: *{cheapest['name']}* at ₹{cheapest['price']} on {cheapest['platform'].capitalize()}")
 
     return "\n".join(lines)
 
 
 def _cart_keyboard(data: dict) -> InlineKeyboardMarkup | None:
-    """One 'Add to cart' button per platform that has results."""
-    query    = data["query"]
+    """One row per product (top N per platform), each with an Add button."""
+    query   = data["query"]
+    results = data.get("results", {})
     cheapest = data.get("cheapest")
-    results  = data.get("results", {})
 
     buttons = []
     for platform, result in results.items():
         if result["status"] == "error" or not result["products"]:
             continue
-        best = min(
-            (p for p in result["products"] if p["in_stock"]),
-            key=lambda p: p["price"],
-            default=None,
-        )
-        if best:
-            emoji = PLATFORM_EMOJI.get(platform, "🛒")
-            label = f"{emoji} Add to {platform.capitalize()} cart (₹{best['price']})"
-            cb    = f"cart|{platform}|{query}|{best['name']}"
-            buttons.append([InlineKeyboardButton(label, callback_data=cb[:64])])
+        emoji = PLATFORM_EMOJI.get(platform, "🛒")
+        in_stock = [p for p in result["products"] if p["in_stock"]]
+        top = sorted(in_stock, key=lambda p: p["price"])[:TOP_N]
+        for p in top:
+            tag = " ✅" if cheapest and p["name"] == cheapest["name"] and p["platform"] == cheapest["platform"] else ""
+            btn_label = f"{emoji} ₹{p['price']} {p['name'][:25]}{tag}"
+            # cb data: select|platform|query|product_name  (truncated to 64 chars)
+            cb = f"sel|{platform}|{query[:15]}|{p['name'][:20]}"
+            buttons.append([InlineKeyboardButton(btn_label, callback_data=cb)])
 
     return InlineKeyboardMarkup(buttons) if buttons else None
 
@@ -150,7 +154,8 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Update history
     history.append({"role": "user", "content": text})
-    history.append({"role": "assistant", "content": str(result)})
+    assistant_content = result.get("reply") or result.get("search_query") or str(result)
+    history.append({"role": "assistant", "content": assistant_content})
     # Keep last 20 messages to avoid token bloat
     _histories[user_id] = history[-20:]
 
@@ -160,8 +165,8 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await thinking.edit_text(result.get("reply", "🤔 I'm not sure what you mean. Try asking for a product!"))
         return
 
-    # intent == "search"
-    search_query = result.get("search_query", text)
+    # intent == "search" — use only the product name, not quantity, for scraper search
+    search_query = result.get("product", result.get("search_query", text)).strip()
     await thinking.edit_text(f"🔍 Searching for *{search_query}*...", parse_mode="Markdown")
 
     try:
@@ -170,34 +175,87 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         keyboard = _cart_keyboard(data)
         await thinking.edit_text(message, parse_mode="Markdown", reply_markup=keyboard)
     except Exception as e:
+        import traceback; traceback.print_exc()
         await thinking.edit_text(f"❌ Search failed: {e}")
 
 
-async def handle_cart_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+CHECKOUT_URLS = {
+    "blinkit": "https://blinkit.com/?cart=open",
+    "zepto":   "https://www.zeptonow.com/?cart=open",
+}
 
-    parts = query.data.split("|", 3)
+
+async def handle_select_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """User tapped a product — show quantity picker."""
+    cb = update.callback_query
+    await cb.answer()
+
+    parts = cb.data.split("|", 3)
     if len(parts) != 4:
         return
+    _, platform, query, product_name = parts
 
-    _, platform, search_query, product_name = parts
-    await query.edit_message_reply_markup(None)
-    msg = await query.message.reply_text(f"🛒 Adding to {platform.capitalize()} cart...")
+    user_id = cb.from_user.id
+    _pending_cart[user_id] = {"platform": platform, "query": query, "product_name": product_name}
 
-    ok, err = await _add_to_cart(platform, search_query, product_name)
-    if ok:
-        checkout_urls = {
-            "blinkit": "https://blinkit.com/?cart=open",
-            "zepto":   "https://www.zeptonow.com/?cart=open",
-        }
-        await msg.edit_text(
-            f"✅ Added to {platform.capitalize()} cart!\n\n"
-            f"[👉 Open {platform.capitalize()} to checkout]({checkout_urls.get(platform, '#')})",
-            parse_mode="Markdown",
-        )
-    else:
-        await msg.edit_text(f"❌ Failed to add to cart: {err}")
+    qty_buttons = [
+        [
+            InlineKeyboardButton("1", callback_data="qty|1"),
+            InlineKeyboardButton("2", callback_data="qty|2"),
+            InlineKeyboardButton("3", callback_data="qty|3"),
+        ],
+        [
+            InlineKeyboardButton("4", callback_data="qty|4"),
+            InlineKeyboardButton("5", callback_data="qty|5"),
+            InlineKeyboardButton("6", callback_data="qty|6"),
+        ],
+        [InlineKeyboardButton("❌ Cancel", callback_data="qty|cancel")],
+    ]
+    await cb.message.reply_text(
+        f"🛒 *{product_name}* on {platform.capitalize()}\n\nHow many units?",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(qty_buttons),
+    )
+
+
+async def handle_qty_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """User picked a quantity — add to cart N times."""
+    cb = update.callback_query
+    await cb.answer()
+
+    user_id = cb.from_user.id
+    qty_str = cb.data.split("|", 1)[1]
+
+    await cb.edit_message_reply_markup(None)
+
+    if qty_str == "cancel":
+        await cb.message.reply_text("❌ Cancelled.")
+        _pending_cart.pop(user_id, None)
+        return
+
+    pending = _pending_cart.pop(user_id, None)
+    if not pending:
+        await cb.message.reply_text("⚠️ Session expired, please search again.")
+        return
+
+    qty = int(qty_str)
+    platform     = pending["platform"]
+    query        = pending["query"]
+    product_name = pending["product_name"]
+
+    msg = await cb.message.reply_text(f"🛒 Adding {qty}x *{product_name}* to {platform.capitalize()}...", parse_mode="Markdown")
+
+    for _ in range(qty):
+        ok, err = await _add_to_cart(platform, query, product_name)
+        if not ok:
+            await msg.edit_text(f"❌ Failed: {err}")
+            return
+
+    await msg.edit_text(
+        f"✅ Added {qty}x *{product_name}* to {platform.capitalize()}!\n\n"
+        f"[👉 Open {platform.capitalize()} to checkout]({CHECKOUT_URLS.get(platform, '#')})",
+        parse_mode="Markdown",
+    )
 
 
 # ---------- NLP endpoint (called by bot, served by FastAPI) ----------
@@ -208,7 +266,8 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("clear", cmd_clear))
-    app.add_handler(CallbackQueryHandler(handle_cart_callback, pattern=r"^cart\|"))
+    app.add_handler(CallbackQueryHandler(handle_select_callback, pattern=r"^sel\|"))
+    app.add_handler(CallbackQueryHandler(handle_qty_callback,    pattern=r"^qty\|"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("🤖 Bot is running... Press Ctrl+C to stop.")
