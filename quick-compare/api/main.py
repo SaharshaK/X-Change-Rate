@@ -60,12 +60,26 @@ def product_to_out(p: Product) -> ProductOut:
     return ProductOut(**p.to_dict())
 
 
+def is_relevant(product_name: str, query: str) -> bool:
+    """
+    Require every word in the query to appear as a whole word in the product name.
+    Prevents 'butter' from matching 'buttermilk', 'butterscotch', etc.
+    """
+    import re
+    name = product_name.lower()
+    for word in query.lower().split():
+        if not re.search(rf"\b{re.escape(word)}\b", name):
+            return False
+    return True
+
+
 async def fetch_platform(query: str, platform: str, headless: bool) -> PlatformResult:
     cached = await get_cached(query, platform)
     if cached is not None:
+        filtered = [ProductOut(**p) for p in cached if is_relevant(p["name"], query)]
         return PlatformResult(
             platform=platform,
-            products=[ProductOut(**p) for p in cached],
+            products=filtered,
             status="cached",
             error=None,
             search_time_ms=0,
@@ -81,9 +95,11 @@ async def fetch_platform(query: str, platform: str, headless: bool) -> PlatformR
     if not error:
         await set_cached(query, platform, [p.to_dict() for p in products])
 
+    filtered = [product_to_out(p) for p in products if is_relevant(p.name, query)]
+
     return PlatformResult(
         platform=platform,
-        products=[product_to_out(p) for p in products],
+        products=filtered,
         status="error" if error else "success",
         error=error,
         search_time_ms=elapsed,
