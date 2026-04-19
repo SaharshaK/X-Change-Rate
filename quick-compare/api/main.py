@@ -7,14 +7,17 @@ from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import sys
-sys.path.insert(0, str(__import__('pathlib').Path(__file__).parent.parent))
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scrapers import BlinkitScraper, ZeptoScraper, InstamartScraper
 from scrapers.base import Product
-from db import init_db, get_cached, set_cached, clear_cache
+from db import init_db, get_cached, set_cached, clear_cache, suggest_names
 
 
 # ---------- models ----------
@@ -207,7 +210,25 @@ async def search_platform(
     return await fetch_platform(q, platform, headless)
 
 
+@app.get("/suggest")
+async def suggest(q: str = Query(..., min_length=2)):
+    names = await suggest_names(q)
+    return {"suggestions": names}
+
+
 @app.delete("/cache")
 async def bust_cache():
     await clear_cache()
     return {"message": "Cache cleared"}
+
+
+# ---------- serve frontend ----------
+
+FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
+
+if FRONTEND_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+
+    @app.get("/")
+    async def serve_frontend():
+        return FileResponse(str(FRONTEND_DIR / "index.html"))
