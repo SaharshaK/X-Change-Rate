@@ -53,6 +53,20 @@ class BlinkitScraper(BaseScraper):
             url = f"{self.BASE_URL}/s/?q={quote(query)}"
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(3500)
+
+            # Detect login wall — Blinkit redirects to /login when session expires
+            if "/login" in page.url or "/signin" in page.url:
+                raise RuntimeError(
+                    "Not logged in to Blinkit. Open Chrome, log in at blinkit.com, then restart the server."
+                )
+
+            # Detect location prompt (user not set a delivery address)
+            body = await page.inner_text("body")
+            if "enter your location" in body.lower() or "select location" in body.lower():
+                raise RuntimeError(
+                    "Blinkit needs a delivery location. Open Chrome, set your address on blinkit.com, then retry."
+                )
+
             await page.wait_for_selector("div[class*='tw-line-clamp-2']", timeout=15000)
 
             products = await page.evaluate(JS)
