@@ -9,7 +9,20 @@ from dotenv import load_dotenv
 from groq import AsyncGroq
 
 load_dotenv(Path(__file__).parent.parent / ".env")
-_client = AsyncGroq(api_key=os.environ["GROQ_API_KEY"])
+
+_client: AsyncGroq | None = None
+
+
+def _get_client() -> AsyncGroq:
+    global _client
+    if _client is None:
+        key = os.environ.get("GROQ_API_KEY")
+        if not key:
+            raise RuntimeError(
+                "GROQ_API_KEY is not set. Add it to quick-compare/.env or the environment."
+            )
+        _client = AsyncGroq(api_key=key)
+    return _client
 
 _SYSTEM_PROMPT = """You are a grocery shopping assistant. Your job is to help users find and compare grocery prices.
 
@@ -39,7 +52,7 @@ async def chat(
         messages.extend(history)
     messages.append({"role": "user", "content": user_message})
 
-    response = await _client.chat.completions.create(
+    response = await _get_client().chat.completions.create(
         model="llama-3.1-8b-instant",
         messages=messages,
         temperature=0.1,
@@ -63,6 +76,8 @@ async def chat(
 
 async def parse_query(natural_language: str, history: List[Dict[str, str]] | None = None) -> str:
     """Convenience wrapper used by /smart-search — returns just the search string."""
+    if not os.environ.get("GROQ_API_KEY"):
+        return natural_language.strip()
     result = await chat(natural_language, history)
     if result.get("intent") == "search":
         return result["search_query"]

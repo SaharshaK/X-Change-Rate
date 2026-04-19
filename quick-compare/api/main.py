@@ -7,7 +7,6 @@ from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -286,11 +285,10 @@ async def smart_search_get(
 
 # ---------- serve frontend ----------
 
-FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
+_INDEX_HTML = Path(__file__).resolve().parent.parent.parent / "index.html"
 
-if FRONTEND_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+if _INDEX_HTML.exists():
 
     @app.get("/")
     async def serve_frontend():
-        return FileResponse(str(FRONTEND_DIR / "index.html"))
+        return FileResponse(str(_INDEX_HTML))
